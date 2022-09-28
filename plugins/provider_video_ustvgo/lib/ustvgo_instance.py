@@ -30,6 +30,6 @@ class USTVGOInstance(PluginInstanceObj):
             return
         if not self.config_obj.data[self.config_section]['enabled']:
             return
+        self.logger.info("Trying to get USTVGO Channels")
         self.channels = Channels(self)
         self.epg = EPG(self)
-        

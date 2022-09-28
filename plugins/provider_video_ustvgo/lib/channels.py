@@ -40,7 +40,7 @@ class Channels(PluginChannels):
 
     def get_channels(self):
         """
-        USTVGO has numerous bad callsigns being listed.  A manual lookup table is 
+        USTVGO has numerous bad callsigns being listed.  A manual lookup table is
         being used at plugin/resource/channel.json
         This will need to be periodically updated.  Currently, a manual process.
         See https://github.com/benmoose39/ustvgo_to_m3u
@@ -56,11 +56,15 @@ class Channels(PluginChannels):
         for channel_dict in ch_real_callsigns:
             hd = 0
             ch_id = channel_dict['ChannelId']
+
             ch_callsign = channel_dict['CallSign']
-            if self.get_ustvgo_stream(ch_callsign) is None:
-                self.logger.info('{} VPN, ignoring channel {}:{}'.format(
-                    self.plugin_obj.name, ch_callsign, channel_dict['GuideName']))
-                continue
+
+            if not self.config_obj.data['ustvgo_mychannels'].get("vpn", False):
+                if self.get_ustvgo_stream(ch_callsign) is None:
+                    self.logger.info('{} VPN, ignoring channel {}:{}'.format(
+                        self.plugin_obj.name, ch_callsign, channel_dict['GuideName']))
+                    continue
+            self.logger.info("Adding callsign "+str(ch_callsign))
             thumbnail = None
             thumbnail_size = None
             if 'Thumbnail' in channel_dict:
@@ -85,7 +89,7 @@ class Channels(PluginChannels):
             ch_list.append(channel)
         ch_real_callsigns = None
         return ch_list
-    
+
     def get_channel_uri(self, _channel_id):
         ch_dict = self.db.get_channel(_channel_id, self.plugin_obj.name, self.instance_key)
         callsign = ch_dict['json']['callsign']
@@ -102,7 +106,7 @@ class Channels(PluginChannels):
         }
         uri = self.plugin_obj.unc_ustvgo_stream % (_callsign)
         html = self.get_uri_data(uri, _header=header).decode('utf-8')
-        if 'hls_src=' in html:        
+        if 'hls_src=' in html:
             novpn_url = html.split("hls_src='")[1].split("'")[0]
             return novpn_url
         else:

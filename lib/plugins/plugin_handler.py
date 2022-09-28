@@ -41,6 +41,7 @@ class PluginHandler:
         if PluginHandler.logger is None:
             PluginHandler.logger = logging.getLogger(__name__)
         self.plugin_defn = self.load_plugin_defn()
+        print(self.config_obj.data['paths']['internal_plugins_pkg'])
         self.collect_plugins(self.config_obj.data['paths']['internal_plugins_pkg'])
         if PluginHandler.cls_plugins is not None:
             del PluginHandler.cls_plugins
@@ -50,11 +51,13 @@ class PluginHandler:
         plugin_db = DBPlugins(self.config_obj.data)
         #plugin_db.reinitialize_tables()
         for folder in importlib.resources.contents(_plugins_pkg):
-            if folder.startswith('__'):
+            if folder.startswith('__') or folder.startswith("."):
                 continue
             try:
+                print("Attempt to read", _plugins_pkg, folder)
                 importlib.resources.read_text(_plugins_pkg, folder)
             except (IsADirectoryError, PermissionError):
+                print("Some type of permission error??")
                 try:
                     plugin = Plugin(self.config_obj, self.plugin_defn, '.'.join([_plugins_pkg, folder]))
                     self.plugins[plugin.name] = plugin

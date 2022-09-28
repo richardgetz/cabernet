@@ -59,7 +59,7 @@ from lib.streams.stream import Stream
 
 RESTART_REQUESTED = None
 LOGGER = None
-    
+
 if sys.version_info.major == 2 or sys.version_info < (3, 7):
     print('Error: Cabernet requires python 3.7+.')
     sys.exit(1)
@@ -114,7 +114,7 @@ def main(script_dir):
 
         LOGGER.warning('#########################################')
         LOGGER.warning('MIT License, Copyright (C) 2021 ROCKY4546')
-        LOGGER.notice('Cabernet v{}'.format(utils.get_version_str()))
+        LOGGER.warning('Cabernet v{}'.format(utils.get_version_str()))
 
         # use this until 0.9.3 due to maintenance mode not being enabled in 0.9.1
         if args.restart and config['main']['maintenance_mode']:
@@ -148,7 +148,7 @@ def main(script_dir):
         LOGGER.notice('Cabernet is now online.')
 
         RESTART_REQUESTED = False
-        while not RESTART_REQUESTED:            
+        while not RESTART_REQUESTED:
             time.sleep(5)
         terminate_queue.put('shutdown')
         LOGGER.notice('Shutting Down and Restarting...')

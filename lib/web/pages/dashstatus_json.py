@@ -31,7 +31,7 @@ def pages_dashstatus_json(_webserver):
     dashstatus_js = DashStatusJS(_webserver.config)
     expire_time = datetime.datetime.utcnow()
     expire_str = expire_time.strftime("%a, %d %b %Y %H:%M:%S GMT")
-    _webserver.do_dict_response({ 
+    _webserver.do_dict_response({
             'code': 200, 'headers': {'Content-type': 'application/json',
             'Expires': expire_str
             },
@@ -55,7 +55,7 @@ class DashStatusJS:
         return js
 
     def get_tuner_status(self):
-        web_tuner_url = 'http://localhost:' + \
+        web_tuner_url = 'http://'+str(self.config['web']['plex_accessible_ip'])+':' + \
             str(self.config['web']['plex_accessible_port_external'])
         url = ( web_tuner_url + '/tunerstatus')
         return self.get_url(url)
