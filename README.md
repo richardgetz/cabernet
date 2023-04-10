@@ -1,9 +1,13 @@
+## NOTICE: 
+By default this app doesn't provide any video sources, only the plugins access the providers streams for personal use.
 
 ## Installation
 ### 1. Requirements
 - Python 3.7+
 - python cryptography module
-- ffmpeg
+- python requests module
+- (optional) streamlink module
+- ffmpeg and ffprobe
 
 ### 2. Installation
 - Download source
@@ -18,9 +22,6 @@ label = PlutoTV Instance
 - Bring up browser and go to http://ipaddress:6077/
 - Go to settings and make changes you want.
     - Logging: Change log level from warning to info if needed
-    - Under Providers > PlutoTV enable
-        - URL Filtering
-        - PTS/DTS Resync
 - From XML/JSON Links try some of the links
 
 ### 3. Docker
@@ -33,9 +34,9 @@ See http://ghcr.io/cabernetwork/cabernet:latest
     - http://ipaddress:6077/PlutoTV/Default/channels.m3u
 - config.ini group tag requirements
     - All lower case
-    - Underscore separates the plugin name from the instance name
-    - Use a single word if possible for the instance name or use underlines between words
-    - Do not change the instance name.  It is used throughout the system and is difficult to change.
+    - Underscore is a key character in section tags and separates the plugin name from the instance name
+    - Use a single word if possible for the instance name
+    - Do not change the instance name unless you go into data management and remove the instance first.
     - [plutotv_mychannels]
 
 Enjoy
