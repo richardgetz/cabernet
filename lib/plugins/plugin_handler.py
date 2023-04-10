@@ -54,7 +54,7 @@ class PluginHandler:
             if folder.startswith('__'):
                 continue
             try:
-                importlib.resources.read_text(_plugins_pkg, folder)
+                importlib.resources.read_text(_plugins_pkg, folder, encoding='utf-8', errors='ignore')
             except (IsADirectoryError, PermissionError) as e:
                 try:
                     plugin = Plugin(self.config_obj, self.plugin_defn, '.'.join([_plugins_pkg, folder]))
