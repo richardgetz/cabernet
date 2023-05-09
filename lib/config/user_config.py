@@ -22,6 +22,7 @@ import json
 import logging
 import pathlib
 import os
+import re
 import shutil
 
 import lib.common.utils as utils
@@ -53,7 +54,6 @@ def config_json(_webserver):
 
 
 class TVHUserConfig:
-    config_handler = configparser.ConfigParser(interpolation=None)
 
     def __init__(self, _script_dir=None, _opersystem=None, _args=None, _config=None):
         self.logger = None
@@ -62,6 +62,8 @@ class TVHUserConfig:
         self.script_dir = str(_script_dir)
         self.defn_json = config_defn.load_default_config_defns()
         self.data = self.defn_json.get_default_config()
+        self.config_handler = configparser.ConfigParser(interpolation=None)
+
         if _script_dir is not None:
             config_file = TVHUserConfig.get_config_path(_script_dir, _args)
             self.import_config(config_file)
@@ -111,8 +113,20 @@ class TVHUserConfig:
         self.logger = logging.getLogger(__name__)
         self.logger.info("Loading Configuration File: " + str(config_file))
 
+        search_section_name = re.compile('^[a-zA-Z0-9]+_?[a-zA-Z0-9]+$')
+
         for each_section in self.config_handler.sections():
             lower_section = each_section.lower()
+            if each_section != lower_section:
+                self.logger.error('ERROR: ALL SECTIONS IN THE config.ini MUST BE LOWER CASE. Found: {}'
+                    .format(each_section))
+                continue
+            m = re.match(search_section_name, each_section)
+            if m is None:
+                self.logger.error('ERROR: INVALID SECTION NAME IN THE config.ini. Found: {}'
+                    .format(each_section))
+                continue
+
             if lower_section not in self.data.keys():
                 self.data.update({lower_section: {}})
             for (each_key, each_val) in self.config_handler.items(each_section):
@@ -135,8 +149,11 @@ class TVHUserConfig:
             if not config_file:
                 # create one in the data folder
                 try:
+                    data_folder = pathlib.Path(_script_dir).joinpath('data')
+                    if not data_folder.exists():
+                        os.mkdir(data_folder)
                     f = open('data/' + CONFIG_FILENAME, 'wb')
-                    config_file = pathlib.Path(_script_dir).joinpath('data/' + CONFIG_FILENAME)
+                    config_file = pathlib.Path(data_folder).joinpath(CONFIG_FILENAME)
                     f.close()
                 except PermissionError as e:
                     print('ERROR: {} unable to create {}'.format(str(e), poss_config))
@@ -256,7 +273,7 @@ class TVHUserConfig:
     def save_config_section(self, _section, _updated_data, _config_defaults):
         results = ''
         for (key, value) in _updated_data[_section].items():
-            if value[1]:
+            if len(value) > 1 and value[1]:
                 if value[0] is None:
                     # use default and remove item from config.ini
                     try:
@@ -287,13 +304,14 @@ class TVHUserConfig:
                         self.config_handler.add_section(_section)
                         self.config_handler.set(
                             _section, key, str(_updated_data[_section][key][0]))
-                    self.data[_section][key] = _updated_data[_section][key][0]
-                    if len(_updated_data[_section][key]) == 3:
-                        results += '<li>Updated [{}][{}] updated</li>' \
-                            .format(_section, key)
-                    else:
-                        results += '<li>Updated [{}][{}] to {}</li>' \
-                            .format(_section, key, _updated_data[_section][key][0])
+                    if self.data.get(_section) is not None:
+                        self.data[_section][key] = _updated_data[_section][key][0]
+                        if len(_updated_data[_section][key]) == 3:
+                            results += '<li>Updated [{}][{}] updated</li>' \
+                                .format(_section, key)
+                        else:
+                            results += '<li>Updated [{}][{}] to {}</li>' \
+                                .format(_section, key, _updated_data[_section][key][0])
         return results
 
     def write(self, _section, _key, _value):

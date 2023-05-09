@@ -24,16 +24,17 @@ import re
 import shutil
 import os
 
+import lib.db.datamgmt.backups as backups
+from lib.common import utils
 from lib.common.decorators import getrequest
 from lib.common.decorators import postrequest
-import lib.db.datamgmt.backups as backups
 from lib.db.db_channels import DBChannels
 from lib.db.db_epg import DBepg
 from lib.db.db_epg_programs import DBEpgPrograms
 from lib.db.db_scheduler import DBScheduler
 from lib.db.db_plugins import DBPlugins
 
-BACKUP_FOLDER_NAME = 'CarbernetBackup'
+BACKUP_FOLDER_NAME = '*Backup'
 
 
 @getrequest.route('/api/datamgmt')
@@ -130,7 +131,7 @@ def del_instance(_config, _name):
 
     html = ''
     db_plugins = DBPlugins(_config)
-    num_del = db_plugins.del_instance(name_inst[0], name_inst[1])
+    num_del = db_plugins.del_instance(None, name_inst[0], name_inst[1])
     if num_del > 0:
         html = ''.join([html,
                         '<b>', _name, '</b> deleted from Plugins<br>'
@@ -194,6 +195,7 @@ class DataMgmtHTML:
         self.logger = logging.getLogger(__name__)
         self.config = _plugins.config_obj.data
         self.bkups = backups.Backups(_plugins)
+        self.search_date = re.compile('[^_]+(_([\d.]+[-RC\d]*))?_(\d*?_\d*)')
 
     def get(self):
         return ''.join([self.header, self.body])
@@ -333,7 +335,7 @@ class DataMgmtHTML:
         return html
 
     def del_backup(self, _folder):
-        valid_regex = re.compile('^([a-zA-Z0-9_]+$)')
+        valid_regex = re.compile('^([a-zA-Z0-9_.]+$)')
         if not valid_regex.match(_folder):
             self.logger.info('Invalid backup folder to delete: {}'.format(_folder))
             return
@@ -394,16 +396,24 @@ class DataMgmtHTML:
 
     def get_backup_date(self, _filename):
         try:
-            datetime_obj = datetime.datetime.strptime(_filename,
-                                                      BACKUP_FOLDER_NAME + '_%Y%m%d_%H%M')
+            m = re.match(self.search_date, _filename)
+            if m and len(m.groups()) == 3:
+                ver = m.group(2)
+                if ver is None:
+                    ver = ''
+                date_str = m.group(3)
+                datetime_obj = datetime.datetime.strptime(
+                    date_str, '%Y%m%d_%H%M')
+            else:
+                raise ValueError('Filename incorrect format')
         except ValueError as e:
             self.logger.info('Bad backup folder name {}: {}'.format(_filename, e))
             return None
         opersystem = platform.system()
         if opersystem in ['Windows']:
-            return datetime_obj.strftime('%m/%d/%Y, %#I:%M %p')
+            return datetime_obj.strftime('%m/%d/%Y, %#I:%M %p ' + str(ver))
         else:
-            return datetime_obj.strftime('%m/%d/%Y, %-I:%M %p')
+            return datetime_obj.strftime('%m/%d/%Y, %-I:%M %p ' + str(ver))
 
     @property
     def select_reset_channel(self):
@@ -463,8 +473,11 @@ class DataMgmtHTML:
         name_inst_dict = db_plugins.get_instances()
         for ns, inst_list in name_inst_dict.items():
             for inst in inst_list:
-                name_inst.append(''.join([
-                    ns, ':', inst]))
+                section = utils.instance_config_section(ns, inst)
+                if self.config.get(section) \
+                        and self.config[section].get('enabled'):
+                    name_inst.append(''.join([
+                        ns, ':', inst]))
         db_channels = DBChannels(self.config)
         name_inst_list = db_channels.get_channel_instances()
         self.update_ns_inst(name_inst, name_inst_list)

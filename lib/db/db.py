@@ -20,10 +20,12 @@ import logging
 import os
 import pathlib
 import random
+import shutil
 import sqlite3
 import threading
 import time
 
+LOCK = threading.Lock()
 DB_EXT = '.db'
 BACKUP_EXT = '.sql'
 
@@ -34,7 +36,7 @@ SQL_ADD_ROW = '_add'
 SQL_UPDATE = '_update'
 SQL_GET = '_get'
 SQL_DELETE = '_del'
-
+FILE_LINK_ZIP = '_filelinks'
 
 class DB:
     conn = {}
@@ -57,13 +59,19 @@ class DB:
         self.check_connection()
         DB.conn[self.db_name][threading.get_ident()].commit()
 
-    def sql_exec(self, _sqlcmd, _bindings=None):
+    def sql_exec(self, _sqlcmd, _bindings=None, _cursor=None):
         try:
             self.check_connection()
             if _bindings:
-                return DB.conn[self.db_name][threading.get_ident()].execute(_sqlcmd, _bindings)
+                if _cursor:
+                    return _cursor.execute(_sqlcmd, _bindings)
+                else:
+                    return DB.conn[self.db_name][threading.get_ident()].execute(_sqlcmd, _bindings)
             else:
-                return DB.conn[self.db_name][threading.get_ident()].execute(_sqlcmd)
+                if _cursor:
+                    return _cursor.execute(_sqlcmd)
+                else:
+                    return DB.conn[self.db_name][threading.get_ident()].execute(_sqlcmd)
         except sqlite3.IntegrityError as e:
             DB.conn[self.db_name][threading.get_ident()].close()
             del DB.conn[self.db_name][threading.get_ident()]
@@ -77,11 +85,13 @@ class DB:
     def add(self, _table, _values):
         cur = None
         sqlcmd = self.sqlcmds[''.join([_table, SQL_ADD_ROW])]
-        i = 5
+        i = 10
         while i > 0:
             i -= 1
             try:
-                cur = self.sql_exec(sqlcmd, _values)
+                self.check_connection()
+                cur = DB.conn[self.db_name][threading.get_ident()].cursor()
+                self.sql_exec(sqlcmd, _values, cur)
                 DB.conn[self.db_name][threading.get_ident()].commit()
                 lastrow = cur.lastrowid
                 cur.close()
@@ -98,11 +108,13 @@ class DB:
     def delete(self, _table, _values):
         cur = None
         sqlcmd = self.sqlcmds[''.join([_table, SQL_DELETE])]
-        i = 5
+        i = 10
         while i > 0:
             i -= 1
             try:
-                cur = self.sql_exec(sqlcmd, _values)
+                self.check_connection()
+                cur = DB.conn[self.db_name][threading.get_ident()].cursor()
+                self.sql_exec(sqlcmd, _values, cur)
                 num_deleted = cur.rowcount
                 DB.conn[self.db_name][threading.get_ident()].commit()
                 cur.close()
@@ -119,14 +131,18 @@ class DB:
     def update(self, _table, _values=None):
         cur = None
         sqlcmd = self.sqlcmds[''.join([_table, SQL_UPDATE])]
-        i = 5
+        i = 10
         while i > 0:
             i -= 1
             try:
-                cur = self.sql_exec(sqlcmd, _values)
+                LOCK.acquire(True)
+                self.check_connection()
+                cur = DB.conn[self.db_name][threading.get_ident()].cursor()
+                self.sql_exec(sqlcmd, _values, cur)
                 DB.conn[self.db_name][threading.get_ident()].commit()
                 lastrow = cur.lastrowid
                 cur.close()
+                LOCK.release()
                 return lastrow
             except sqlite3.OperationalError as e:
                 self.logger.notice('{} Update request ignored, retrying {}, {}'
@@ -134,6 +150,7 @@ class DB:
                 DB.conn[self.db_name][threading.get_ident()].rollback()
                 if cur is not None:
                     cur.close()
+                LOCK.release()
                 self.rnd_sleep(0.3)
         return None
 
@@ -143,11 +160,13 @@ class DB:
     def get(self, _table, _where=None):
         cur = None
         sqlcmd = self.sqlcmds[''.join([_table, SQL_GET])]
-        i = 5
+        i = 10
         while i > 0:
             i -= 1
             try:
-                cur = self.sql_exec(sqlcmd, _where)
+                self.check_connection()
+                cur = DB.conn[self.db_name][threading.get_ident()].cursor()
+                self.sql_exec(sqlcmd, _where, cur)
                 result = cur.fetchall()
                 cur.close()
                 return result
@@ -166,16 +185,20 @@ class DB:
             sqlcmd = self.sqlcmds[''.join([_table, SQL_GET])]
         else:
             sqlcmd = sql
-        i = 5
+        i = 10
         while i > 0:
             i -= 1
             try:
-                cur = self.sql_exec(sqlcmd, _where)
+                LOCK.acquire(True)
+                self.check_connection()
+                cur = DB.conn[self.db_name][threading.get_ident()].cursor()
+                self.sql_exec(sqlcmd, _where, cur)
                 records = cur.fetchall()
                 rows = []
                 for row in records:
                     rows.append(dict(zip([c[0] for c in cur.description], row)))
                 cur.close()
+                LOCK.release()
                 return rows
             except sqlite3.OperationalError as e:
                 self.logger.warning('{} GET request ignored retrying {}, {}'
@@ -183,6 +206,7 @@ class DB:
                 DB.conn[self.db_name][threading.get_ident()].rollback()
                 if cur is not None:
                     cur.close()
+                LOCK.release()
                 self.rnd_sleep(0.3)
         return None
 
@@ -275,8 +299,6 @@ class DB:
         filename = '_'.join(str(x) for x in _keys) + '.txt'
         file_rel_path = pathlib.Path(self.db_name).joinpath(filename)
         return self.get_file(file_rel_path)
-    
-    
 
     def reinitialize_tables(self):
         self.drop_tables()
@@ -298,8 +320,17 @@ class DB:
             if not os.path.isdir(backup_folder):
                 os.mkdir(backup_folder)
             self.check_connection()
+
+            # Check for linked file folder and zip up if present
+            db_linkfilepath = pathlib.Path(self.config['paths']['db_dir']) \
+                .joinpath(self.db_name)
+            if db_linkfilepath.exists():
+                self.logger.debug('Linked file folder exists, backing up folder for db {}'.format(self.db_name))
+                backup_filelink = pathlib.Path(backup_folder, self.db_name + FILE_LINK_ZIP)
+                shutil.make_archive(backup_filelink, 'zip', db_linkfilepath)
+
             backup_file = pathlib.Path(backup_folder, self.db_name + BACKUP_EXT)
-            with open(backup_file, 'w') as export_f:
+            with open(backup_file, 'w', encoding='utf-8') as export_f:
                 for line in DB.conn[self.db_name][threading.get_ident()].iterdump():
                     export_f.write('%s\n' % line)
         except PermissionError as e:
@@ -312,6 +343,15 @@ class DB:
             msg = 'Backup folder does not exist: {}'.format(backup_folder)
             self.logger.warning(msg)
             return msg
+
+        # Check for linked file folder and zip up if present
+        backup_filelink = pathlib.Path(backup_folder, self.db_name + FILE_LINK_ZIP + '.zip')
+        db_linkfilepath = pathlib.Path(self.config['paths']['db_dir']) \
+            .joinpath(self.db_name)
+        if backup_filelink.exists():
+            self.logger.debug('Linked file folder exists, restoring folder for db {}'.format(self.db_name))
+            shutil.unpack_archive(backup_filelink, db_linkfilepath)
+
         backup_file = pathlib.Path(backup_folder, self.db_name + BACKUP_EXT)
         if not os.path.isfile(backup_file):
             msg = 'Backup file does not exist, skipping: {}'.format(backup_file)

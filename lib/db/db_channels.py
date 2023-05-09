@@ -20,10 +20,12 @@ import ast
 import json
 import datetime
 import sqlite3
+import threading
 
 from lib.db.db import DB
 from lib.common.decorators import Backup
 from lib.common.decorators import Restore
+
 
 DB_CHANNELS_TABLE = 'channels'
 DB_STATUS_TABLE = 'status'
@@ -87,7 +89,7 @@ sqlcmds = {
         """,
         """
         DROP TABLE IF EXISTS categories
-        """
+        """,
         """
         DROP TABLE IF EXISTS zones
         """
@@ -142,7 +144,8 @@ sqlcmds = {
     'channels_get':
         """
         SELECT * FROM channels WHERE namespace LIKE ?
-        AND instance LIKE ? ORDER BY CAST(number as FLOAT), namespace, instance
+        AND instance LIKE ? AND enabled LIKE ?
+        ORDER BY CAST(number as FLOAT), namespace, instance
         """,
     'channels_one_get':
         """
@@ -277,14 +280,16 @@ class DBChannels(DB):
         else:
             return None
 
-    def get_channels(self, _namespace, _instance):
+    def get_channels(self, _namespace, _instance, _enabled=None):
         if not _namespace:
             _namespace = '%'
         if not _instance:
             _instance = '%'
+        if _enabled is None:
+            _enabled = '%'
 
         rows_dict = {}
-        rows = self.get_dict(DB_CHANNELS_TABLE, (_namespace, _instance,))
+        rows = self.get_dict(DB_CHANNELS_TABLE, (_namespace, _instance, _enabled))
         if rows is None:
             return None
         for row in rows:
@@ -315,12 +320,13 @@ class DBChannels(DB):
             _instance = '%'
 
         rows = self.get_dict(DB_CHANNELS_TABLE + '_one', (_uid, _namespace, _instance,))
-        for row in rows:
-            ch = json.loads(row['json'])
-            row['json'] = ch
-            if row['atsc'] is not None:
-                row['atsc'] = ast.literal_eval(row['atsc'])
-            return row
+        if rows:
+            for row in rows:
+                ch = json.loads(row['json'])
+                row['json'] = ch
+                if row['atsc'] is not None:
+                    row['atsc'] = ast.literal_eval(row['atsc'])
+                return row
         return None
 
     def update_channel_atsc(self, _ch):

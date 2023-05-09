@@ -276,13 +276,13 @@ def enable_ssdp(_config_obj, _section, _key):
 
 
 def set_hdhomerun_id(_config_obj, _section, _key):
-    if _config_obj.data['hdhomerun']['hdhr_id'] is None:
+    if _config_obj.data[_section][_key] is None:
         _config_obj.write(
-            'hdhomerun', 'hdhr_id', hdhr_server.hdhr_gen_device_id())
+            _section, _key, hdhr_server.hdhr_gen_device_id())
     elif not hdhr_server.hdhr_validate_device_id(
-            _config_obj.data['hdhomerun']['hdhr_id']):
+            _config_obj.data[_section][_key]):
         _config_obj.write(
-            'hdhomerun', 'hdhr_id', hdhr_server.hdhr_gen_device_id())
+            _section, _key, hdhr_server.hdhr_gen_device_id())
 
 
 def set_uuid(_config_obj, _section, _key):
@@ -315,6 +315,8 @@ def update_instance_label(_config_obj, _section, _key):
 
 def update_channel_num(_config_obj, _section, _key):
     starting_num = _config_obj.data[_section][_key]
+    init_num = starting_num
+    is_changed = False
     namespace_l, instance = _section.split('_', 1)
     db_channels = DBChannels(_config_obj.data)
     namespaces = db_channels.get_channel_names()
@@ -324,11 +326,23 @@ def update_channel_num(_config_obj, _section, _key):
     namespace = list(namespace)[0]
     ch_list = db_channels.get_channels(namespace, instance)
     for ch in ch_list.values():
-        ch[0]['display_number'] = starting_num
-        starting_num += 1
-        db_channels.update_channel_number(ch[0])
+        if starting_num == -1:
+            if ch[0]['display_number'] != ch[0]['json']['number']:
+                ch[0]['display_number'] = ch[0]['json']['number']
+                is_changed = True
+        else:
+            if ch[0]['display_number'] != starting_num:
+                ch[0]['display_number'] = starting_num
+                is_changed = True
+            starting_num += 1
+        if is_changed:
+            db_channels.update_channel_number(ch[0])
+            is_changed = False
 
-    return '{} {} {}'.format(_section, _key, starting_num, namespace)
+    if init_num == -1:
+        return 'Renumbered channels back to default'.format(_section, _key)
+    else:
+        return 'Renumbered channels starting at {}'.format(_section, _key, init_num)
 
 
 def set_theme_folders(_defn, _config, _section, _key):

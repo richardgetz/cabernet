@@ -26,12 +26,12 @@ import threading
 import time
 
 import lib.m3u8 as m3u8
+import lib.config.config_callbacks as config_callbacks
 import lib.common.utils as utils
 import lib.image_size.get_image_size as get_image_size
 from lib.db.db_channels import DBChannels
 from lib.common.decorators import handle_url_except
 from lib.common.decorators import handle_json_except
-
 
 class PluginChannels:
 
@@ -43,9 +43,9 @@ class PluginChannels:
         self.instance_key = _instance_obj.instance_key
         self.db = DBChannels(self.config_obj.data)
         self.config_section = self.instance_obj.config_section
-        if self.config_obj.data[self.config_section].get('channel-start_ch_num') is not None:
-            self.ch_num_enum = self.config_obj.data[self.config_section]['channel-start_ch_num']
-        else:
+
+        self.ch_num_enum = self.config_obj.data[self.config_section].get('channel-start_ch_num')
+        if self.ch_num_enum is None or self.ch_num_enum < 0:
             self.ch_num_enum = 0
 
     def terminate(self):
@@ -86,7 +86,7 @@ class PluginChannels:
         header = {
             'Content-Type': 'application/json',
             'User-agent': utils.DEFAULT_USER_AGENT}
-        resp = self.plugin_obj.http_session.get(_uri, headers=header, timeout=(2, 4))
+        resp = self.plugin_obj.http_session.get(_uri, headers=header, timeout=(8, 8))
         x = resp.json()
         resp.raise_for_status()
         return x
@@ -99,26 +99,26 @@ class PluginChannels:
         else:
             header = _header
         if _data:
-            resp = self.plugin_obj.http_session.post(_uri, headers=header, data=_data, timeout=(2, 4))
+            resp = self.plugin_obj.http_session.post(_uri, headers=header, data=_data, timeout=(8, 8))
         else:
-            resp = self.plugin_obj.http_session.get(_uri, headers=header, timeout=(2, 4))
+            resp = self.plugin_obj.http_session.get(_uri, headers=header, timeout=(8, 8))
         x = resp.content
         return x
 
-    @handle_url_except(timeout=10.0)
-    @handle_json_except
+    @handle_url_except()
     def get_m3u8_data(self, _uri, _header=None):
         if _header is None:
             return m3u8.load(_uri,
-                             headers={'User-agent': utils.DEFAULT_USER_AGENT})
+                             headers={'User-agent': utils.DEFAULT_USER_AGENT},
+                             http_session=self.plugin_obj.http_session)
         else:
             return m3u8.load(_uri,
-                             headers=_header)
+                             headers=_header,
+                             http_session=self.plugin_obj.http_session)
 
     def refresh_channels(self, force=False):
-        if self.config_obj.data[self.config_section].get('channel-start_ch_num') is not None:
-            self.ch_num_enum = self.config_obj.data[self.config_section]['channel-start_ch_num']
-        else:
+        self.ch_num_enum = self.config_obj.data[self.config_section].get('channel-start_ch_num')
+        if self.ch_num_enum is None or self.ch_num_enum < 0:
             self.ch_num_enum = 0
         last_update = self.db.get_status(self.plugin_obj.name, self.instance_key)
         update_needed = False
@@ -147,6 +147,7 @@ class PluginChannels:
                     self.config_obj.data[self.config_section]['channel-import_groups'])
             else:
                 self.db.save_channel_list(self.plugin_obj.name, self.instance_key, ch_dict)
+            config_callbacks.update_channel_num(self.config_obj, self.config_section, 'channel-start_ch_num')
             self.logger.debug(
                 '{}:{} Channel update complete'
                 .format(self.plugin_obj.name, self.instance_key))
@@ -178,7 +179,7 @@ class PluginChannels:
              'Accept-Encoding': 'identity',
              'Connection': 'Keep-Alive'
              }
-        resp = self.plugin_obj.http_session.get(_thumbnail, headers=h, timeout=(2, 4))
+        resp = self.plugin_obj.http_session.get(_thumbnail, headers=h, timeout=(8, 8))
         resp.raise_for_status()
         img_blob = resp.content
         fp = io.BytesIO(img_blob)
@@ -211,7 +212,9 @@ class PluginChannels:
         ch_json = ch_dict['json']
         best_resolution = -1
         video_url_m3u = m3u8.load(
-            _url, headers=header)
+            _url, headers=header,
+            http_session=self.plugin_obj.http_session)
+
         if not video_url_m3u:
             self.logger.notice('{}:{} Unable to obtain m3u file, aborting stream {}'
                                .format(self.plugin_obj.name, self.instance_key, _channel_id))

@@ -41,13 +41,15 @@ from lib.streams.video import Video
 from .pts_validation import PTSValidation
 from .pts_resync import PTSResync
 
+
 PLAY_LIST = OrderedDict()
 IN_QUEUE = Queue()
 OUT_QUEUE = Queue()
 TERMINATE_REQUESTED = False
-MAX_STREAM_QUEUE_SIZE = 100
+MAX_STREAM_QUEUE_SIZE = 40
 STREAM_QUEUE = Queue()
-
+OUT_QUEUE_LIST = []
+IS_VOD = False
 
 class M3U8Queue(Thread):
     """
@@ -56,11 +58,11 @@ class M3U8Queue(Thread):
     output to the client.
     """
     is_stuck = None
+    http_session = requests.session()
 
     def __init__(self, _config, _channel_dict):
         Thread.__init__(self)
         self.logger = logging.getLogger(__name__ + str(threading.get_ident()))
-        self.http_session = requests.session()
         self.config = _config
         self.namespace = _channel_dict['namespace'].lower()
         self.pts_validation = None
@@ -88,7 +90,7 @@ class M3U8Queue(Thread):
 
     @handle_url_except()
     def get_uri_data(self, _uri):
-        resp = self.http_session.get(_uri, headers=self.header, timeout=(2, 4))
+        resp = self.http_session.get(_uri, headers=self.header, timeout=(8, 8))
         x = resp.content
         resp.raise_for_status()
         return x
@@ -101,19 +103,24 @@ class M3U8Queue(Thread):
             while not TERMINATE_REQUESTED:
                 queue_item = STREAM_QUEUE.get()
                 if queue_item['uri_dt'] == 'terminate':
+                    self.logger.debug('Received terminate from internalproxy {}'.format(os.getpid()))
+                    TERMINATE_REQUESTED = True
                     break
                 elif queue_item['uri_dt'] == 'status':
-                    OUT_QUEUE.put({'uri': 'running',
+                    out_queue_put({'uri': 'running',
                                    'data': None,
                                    'stream': None,
                                    'atsc': None})
                     continue
                 time.sleep(0.01)
                 self.process_m3u8_item(queue_item)
-        except (KeyboardInterrupt, EOFError):
+        except (KeyboardInterrupt, EOFError) as ex:
             TERMINATE_REQUESTED = True
-            self.pts_resync.terminate()
-            self.clear_queues()
+            clear_queues()
+            if self.pts_resync is not None:
+                self.pts_resync.terminate()
+                self.pts_resync = None
+            time.sleep(0.01)
             sys.exit()
         except Exception as ex:
             TERMINATE_REQUESTED = True
@@ -121,15 +128,24 @@ class M3U8Queue(Thread):
             IN_QUEUE.put({'uri': 'terminate'})
             if self.pts_resync is not None:
                 self.pts_resync.terminate()
-            self.clear_queues()
+                self.pts_resync = None
+            clear_queues()
             time.sleep(0.01)
-            self.logger.exception('{}{}'.format(
-                'UNEXPECTED EXCEPTION M3U8Queue=', ex))
+            self.logger.exception('{}'.format(
+                'UNEXPECTED EXCEPTION M3U8Queue='))
             sys.exit()
         # we are terminating so cleanup ffmpeg
         if self.pts_resync is not None:
             self.pts_resync.terminate()
-        self.clear_queues()
+            self.pts_resync = None
+        time.sleep(0.01)
+        out_queue_put({'uri': 'terminate',
+                       'data': None,
+                       'stream': None,
+                       'atsc': None})
+        time.sleep(0.01)
+        TERMINATE_REQUESTED = True
+        self.logger.debug('M3U8Queue terminated {}'.format(os.getpid()))
 
     def decrypt_stream(self, _data):
         if _data['key'] and _data['key']['uri']:
@@ -185,27 +201,38 @@ class M3U8Queue(Thread):
         return None
 
     def process_m3u8_item(self, _queue_item):
+        global IS_VOD
         global TERMINATE_REQUESTED
         global PLAY_LIST
         global OUT_QUEUE
         uri_dt = _queue_item['uri_dt']
         data = _queue_item['data']
         if data['filtered']:
-            OUT_QUEUE.put({'uri': uri_dt[0],
+            out_queue_put({'uri': uri_dt[0],
                            'data': data,
                            'stream': self.get_stream_from_atsc(),
                            'atsc': None})
             PLAY_LIST[uri_dt]['played'] = True
             time.sleep(0.01)
         else:
-            while True:
+            if IS_VOD:
+                count = self.config['stream']['vod_retries']
+            else:
+                count = 1
+            while count > 0:
                 self.video.data = self.get_uri_data(uri_dt[0])
-                break
+                if self.video.data:
+                    break
+                out_queue_put({'uri': 'extend',
+                               'data': data,
+                               'stream': None,
+                               'atsc': None})
+                count -= 1
             if uri_dt not in PLAY_LIST.keys():
                 return
             if self.video.data is None:
                 PLAY_LIST[uri_dt]['played'] = True
-                OUT_QUEUE.put({'uri': uri_dt[0],
+                out_queue_put({'uri': uri_dt[0],
                                'data': data,
                                'stream': None,
                                'atsc': None
@@ -213,19 +240,20 @@ class M3U8Queue(Thread):
                 return
             if not self.decrypt_stream(data):
                 # terminate if stream is not decryptable
-                OUT_QUEUE.put({'uri': 'terminate',
+                out_queue_put({'uri': 'terminate',
                                'data': data,
                                'stream': None,
                                'atsc': None})
                 TERMINATE_REQUESTED = True
                 self.pts_resync.terminate()
-                self.clear_queues()
+                self.pts_resync = None
+                clear_queues()
                 PLAY_LIST[uri_dt]['played'] = True
                 time.sleep(0.01)
                 return
             if not self.is_pts_valid():
                 PLAY_LIST[uri_dt]['played'] = True
-                OUT_QUEUE.put({'uri': uri_dt[0],
+                out_queue_put({'uri': uri_dt[0],
                                'data': data,
                                'stream': None,
                                'atsc': None
@@ -236,7 +264,7 @@ class M3U8Queue(Thread):
                 self.first_segment = False
             self.pts_resync.resequence_pts(self.video)
             if self.video.data is None:
-                OUT_QUEUE.put({'uri': uri_dt[0],
+                out_queue_put({'uri': uri_dt[0],
                                'data': data,
                                'stream': self.video.data,
                                'atsc': None})
@@ -244,7 +272,7 @@ class M3U8Queue(Thread):
                 time.sleep(0.01)
                 return
             atsc_default_msg = self.atsc_processing()
-            OUT_QUEUE.put({'uri': uri_dt[0],
+            out_queue_put({'uri': uri_dt[0],
                            'data': data,
                            'stream': self.video.data,
                            'atsc': atsc_default_msg
@@ -273,18 +301,6 @@ class M3U8Queue(Thread):
                 'recommend running this channel again to catch the ATSC msg.']))
             return self.atsc_msg.format_video_packets()
 
-    def clear_queues(self):
-        global STREAM_QUEUE
-        global OUT_QUEUE
-        global IN_QUEUE
-        # closing a multiporcessing queue with 'close' without emptying
-        # it will prevent a process dependant on that queue
-        # from terminating and fulfilling a 'join' if there was an entry in the queue
-        # so we need to proactivley clear all queue entries instead of closing the queues
-        clear_q(STREAM_QUEUE)
-        clear_q(OUT_QUEUE)
-        clear_q(IN_QUEUE)
-
 
 class M3U8Process(Thread):
     """
@@ -296,9 +312,6 @@ class M3U8Process(Thread):
     def __init__(self, _config, _plugins, _channel_dict):
         Thread.__init__(self)
         self.logger = logging.getLogger(__name__ + str(threading.get_ident()))
-        global IN_QUEUE
-        global OUT_QUEUE
-        global TERMINATE_REQUESTED
         self.config = _config
         self.channel_dict = _channel_dict
         if _channel_dict['json'].get('Header') is None:
@@ -310,44 +323,12 @@ class M3U8Process(Thread):
         else:
             self.use_date_on_key = _channel_dict['json']['use_date_on_m3u8_key']
 
+        self.ch_uid = _channel_dict['uid']
         self.is_starting = True
         self.last_refresh = time.time()
         self.plugins = _plugins
         self.config_section = utils.instance_config_section(_channel_dict['namespace'], _channel_dict['instance'])
-        i = 5
-        while i > 0 and IN_QUEUE.empty():
-            i -= 1
-            time.sleep(0.02)
-        if IN_QUEUE.empty():
-            self.logger.info('1Corrupted queue, restarting process {} {}'.format(_channel_dict['uid'], os.getpid()))
-            TERMINATE_REQUESTED = True
-            time.sleep(0.01)
-            return
-        time.sleep(0.01)
-        try:
-            IN_QUEUE.get(False, 1)
-        except Empty:
-            self.logger.info('2Corrupted queue, restarting process {} {}'.format(_channel_dict['uid'], os.getpid()))
-            TERMINATE_REQUESTED = True
-            time.sleep(0.01)
-            return
 
-        self.stream_uri = self.get_stream_uri()
-        if not self.stream_uri:
-            self.logger.warning('Unknown Channel {}'.format(_channel_dict['uid']))
-            OUT_QUEUE.put({'uri': 'terminate',
-                           'data': None,
-                           'stream': None,
-                           'atsc': None})
-            TERMINATE_REQUESTED = True
-            time.sleep(0.01)
-            return
-        else:
-            OUT_QUEUE.put({'uri': 'running',
-                           'data': None,
-                           'stream': None,
-                           'atsc': None})
-            time.sleep(0.01)
         self.is_running = True
         self.duration = 6
         self.m3u8_q = M3U8Queue(_config, _channel_dict)
@@ -355,7 +336,31 @@ class M3U8Process(Thread):
         self.start()
 
     def run(self):
+        global IS_VOD
+        global IN_QUEUE
+        global OUT_QUEUE
         global TERMINATE_REQUESTED
+
+        self.stream_uri = self.get_stream_uri()
+        if not self.stream_uri:
+            self.logger.warning('Unknown Channel {}'.format(self.ch_uid))
+            out_queue_put({'uri': 'terminate',
+                           'data': None,
+                           'stream': None,
+                           'atsc': None})
+            time.sleep(0.01)
+            self.terminate()
+            self.m3u8_q.join()
+            TERMINATE_REQUESTED = True
+            self.logger.debug('1 M3U8Process terminated {}'.format(os.getpid()))
+            return
+        else:
+            out_queue_put({'uri': 'running',
+                           'data': None,
+                           'stream': None,
+                           'atsc': None})
+            time.sleep(0.01)
+
         try:
             self.logger.debug('M3U8: {} {}'.format(self.stream_uri, os.getpid()))
             if self.config[self.config_section]['player-enable_url_filter']:
@@ -372,8 +377,16 @@ class M3U8Process(Thread):
                 self.logger.debug('Reloading m3u8 stream queue {}'.format(os.getpid()))
                 playlist = self.get_m3u8_data(self.stream_uri)
                 if playlist is None:
-                    self.logger.debug('Playlist is none, terminating stream')
-                    break
+                    self.logger.debug('M3U Playlist is None, retrying')
+                    self.sleep(self.duration+0.5)
+                    continue
+                if playlist.playlist_type == 'vod' or self.config[self.config_section]['player-play_all_segments']:
+                    if not IS_VOD:
+                        self.logger.debug('Setting stream type to VOD {}'.format(os.getpid()))
+                        IS_VOD = True
+                elif IS_VOD:
+                    self.logger.debug('Setting stream type to non-VOD {}'.format(os.getpid()))
+                    IS_VOD = False
                 removed += self.remove_from_stream_queue(playlist)
                 added += self.add_to_stream_queue(playlist)
                 if self.plugins.plugins[self.channel_dict['namespace']].plugin_obj \
@@ -386,13 +399,16 @@ class M3U8Process(Thread):
                 elif self.duration > 0.5:
                     self.sleep(self.duration+0.5)
         except Exception as ex:
-            self.logger.exception('{}{}'.format(
-                'UNEXPECTED EXCEPTION M3U8Process=', ex))
+            self.logger.exception('{}'.format(
+                'UNEXPECTED EXCEPTION M3U8Process='))
         self.terminate()
         # wait for m3u8_q to finish so it can cleanup ffmpeg
         self.m3u8_q.join()
+        TERMINATE_REQUESTED = True
+        self.logger.debug('M3U8Process terminated {}'.format(os.getpid()))
 
     def sleep(self, _time):
+        global TERMINATE_REQUESTED
         start_ttw = time.time()
         for i in range(round(_time * 5)):
             if not TERMINATE_REQUESTED:
@@ -406,7 +422,7 @@ class M3U8Process(Thread):
         try:
             STREAM_QUEUE.put({'uri_dt': 'terminate'})
             time.sleep(0.01)
-        except ValueError:
+        except ValueError as ex:
             pass
 
     def get_stream_uri(self):
@@ -414,10 +430,9 @@ class M3U8Process(Thread):
             .plugin_obj.get_channel_uri_ext(self.channel_dict['uid'], self.channel_dict['instance'])
 
     @handle_url_except()
-    @handle_json_except
     def get_m3u8_data(self, _uri):
         # it sticks here.  Need to find a work around for the socket.timeout per process
-        return m3u8.load(_uri, headers=self.header)
+        return m3u8.load(_uri, headers=self.header, http_session=M3U8Queue.http_session)
 
     def segment_date_time(self, _segment):
         if _segment:
@@ -507,7 +522,8 @@ class M3U8Process(Thread):
                 'key': _key
             }
             if _segment.duration > 0:
-                self.duration = _segment.duration
+                # use geometric averaging of 4 items
+                self.duration = (self.duration*3 + _segment.duration)/4
             try:
                 if not played and not TERMINATE_REQUESTED:
                     self.logger.debug('Added {} to play queue {}'
@@ -518,7 +534,7 @@ class M3U8Process(Thread):
                 if _default_played:
                     self.logger.debug('Skipping {} {} {}'
                                       .format(uri, os.getpid(), _segment.program_date_time))
-            except ValueError:
+            except ValueError as ex:
                 # queue is closed, terminating
                 pass
 
@@ -549,7 +565,7 @@ class M3U8Process(Thread):
                     try:
                         i = url_list.index(s_uri)
                         PLAY_LIST = utils.rename_dict_key(list(PLAY_LIST.keys())[i], s_key, PLAY_LIST)
-                    except ValueError:
+                    except ValueError as ex:
                         # not in list
                         pass
 
@@ -589,14 +605,29 @@ def clear_q(q):
     try:
         while True:
             q.get_nowait()
-    except (Empty, ValueError, EOFError):
+    except (Empty, ValueError, EOFError) as ex:
         pass
 
 
 def clear_queues():
+    # closing a multiprocessing queue with 'close' without emptying
+    # it will prevent a process dependant on that queue
+    # from terminating and fulfilling a 'join' if there was an entry in the queue
+    # so we need to proactivley clear all queue entries instead of closing the queues
+    global STREAM_QUEUE
+    global OUT_QUEUE
+    global IN_QUEUE
     clear_q(OUT_QUEUE)
     clear_q(STREAM_QUEUE)
     clear_q(IN_QUEUE)
+
+def out_queue_put(data_dict):
+    global OUT_QUEUE
+    logger = logging.getLogger(__name__)
+    for t in OUT_QUEUE_LIST:
+        data_dict['thread_id'] = t
+        OUT_QUEUE.put(data_dict)
+        time.sleep(0.01)
 
 
 def start(_config, _plugins, _m3u8_queue, _data_queue, _channel_dict, extra=None):
@@ -620,33 +651,60 @@ def start(_config, _plugins, _m3u8_queue, _data_queue, _channel_dict, extra=None
             try:
                 q_item = IN_QUEUE.get()
                 if q_item['uri'] == 'terminate':
-                    TERMINATE_REQUESTED = True
+                    OUT_QUEUE_LIST.remove(q_item['thread_id'])
+                    if not len(OUT_QUEUE_LIST):
+                        TERMINATE_REQUESTED = True
+                        clear_queues()
+                    else:
+                        clear_q(OUT_QUEUE)
+                    time.sleep(0.01)
+
                     # clear queues in case queues are full (eg VOD) with queue.put stmts blocked 
                     # p_m3u8 & m3u8_q then see TERMINATE_REQUESTED and exit including stopping ffmpeg
-                    clear_queues()
+                    OUT_QUEUE.put({
+                        'thread_id': q_item['thread_id'],
+                        'uri': 'terminate',
+                        'data': None,
+                        'stream': None,
+                        'atsc': None})
                     time.sleep(0.01)
-                    p_m3u8.join()
-                    # finally make sure all queues are clear so that this process can be joined
-                    clear_queues()
+                    if not len(OUT_QUEUE_LIST):
+                        p_m3u8.join()
                 elif q_item['uri'] == 'status':
+                    if q_item['thread_id'] not in OUT_QUEUE_LIST:
+                        OUT_QUEUE_LIST.append(q_item['thread_id'])
+                        logger.debug('Adding client thread {} to m3u8 queue list'.format(q_item['thread_id']))
                     STREAM_QUEUE.put({'uri_dt': 'status'})
-                    logger.debug('Sending Status response to stream process {}'.format(os.getpid()))
+                    logger.debug('Sending Status request to stream queue {}'.format(os.getpid()))
+                    time.sleep(0.01)
                 else:
                     logger.debug('UNKNOWN m3u8 queue request {}'.format(q_item['uri']))
-            except (KeyboardInterrupt, EOFError, TypeError, ValueError):
+            except (KeyboardInterrupt, EOFError, TypeError, ValueError) as ex:
                 TERMINATE_REQUESTED = True
                 try:
+                    clear_queues()
+                    out_queue_put({
+                        'uri': 'terminate',
+                        'data': None,
+                        'stream': None,
+                        'atsc': None})
+                    time.sleep(0.01)
                     STREAM_QUEUE.put({'uri_dt': 'terminate'})
-                except (EOFError, TypeError, ValueError):
+                    time.sleep(0.1)
+                except (EOFError, TypeError, ValueError) as ex:
                     pass
-                time.sleep(0.01)
+                logger.debug('4 m3u8_queue process terminated {}'.format(os.getpid()))
                 sys.exit()
+        clear_queues()
+        logger.debug('1 m3u8_queue process terminated {}'.format(os.getpid()))
         sys.exit()
     except Exception as ex:
-        logger.exception('{}{}'.format(
-            'UNEXPECTED EXCEPTION startup=', str(ex)))
+        logger.exception('{}'.format(
+            'UNEXPECTED EXCEPTION startup'))
         TERMINATE_REQUESTED = True
+        logger.debug('3 m3u8_queue process terminated {}'.format(os.getpid()))
         sys.exit()
-    except KeyboardInterrupt:
+    except KeyboardInterrupt as ex:
         TERMINATE_REQUESTED = True
+        logger.debug('2 m3u8_queue process terminated {}'.format(os.getpid()))
         sys.exit()

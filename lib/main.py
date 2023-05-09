@@ -54,6 +54,7 @@ import lib.db.datamgmt.backups as backups
 import lib.updater.updater as updater
 import lib.config.user_config as user_config
 from lib.db.db_scheduler import DBScheduler
+from lib.db.db_temp import DBTemp
 from lib.common.utils import clean_exit
 from lib.common.pickling import Pickling
 from lib.schedule.scheduler import Scheduler
@@ -138,6 +139,8 @@ def main(script_dir):
         config_obj.write('main', 'maintenance_mode', False)
 
         utils.cleanup_web_temp(config)
+        dbtemp = DBTemp(config)
+        dbtemp.cleanup_temp(None, None)
         plugins = init_plugins(config_obj)
         config_obj.defn_json = None
         init_versions(plugins)
@@ -250,8 +253,9 @@ def init_hdhr(_config, _hdhr_queue):
 def shutdown(_config, _hdhr_serverx, _ssdp_serverx, _webadmin, _tuner, _scheduler, _config_obj, _terminate_queue):
     if _terminate_queue:
         _terminate_queue.put('shutdown')
-        time.sleep(2)
+        time.sleep(0.01)
         terminate_processes(_config, _hdhr_serverx, _ssdp_serverx, _webadmin, _tuner, _scheduler, _config_obj)
+    LOGGER.debug('main process terminated')
     clean_exit()
 
 
@@ -278,3 +282,4 @@ def terminate_processes(_config, _hdhr_serverx, _ssdp_serverx, _webadmin, _tuner
     if _config_obj and _config_obj.defn_json:
         _config_obj.defn_json.terminate()
         del _config_obj
+    time.sleep(0.5)
