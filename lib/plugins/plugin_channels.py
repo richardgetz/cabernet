@@ -82,31 +82,31 @@ class PluginChannels:
 
     @handle_url_except()
     @handle_json_except
-    def get_uri_json_data(self, _uri):
+    def get_uri_json_data(self, _uri, _retries):
         header = {
             'Content-Type': 'application/json',
             'User-agent': utils.DEFAULT_USER_AGENT}
-        resp = self.plugin_obj.http_session.get(_uri, headers=header, timeout=(8, 8))
+        resp = self.plugin_obj.http_session.get(_uri, headers=header, timeout=8)
         x = resp.json()
         resp.raise_for_status()
         return x
 
     @handle_url_except()
-    def get_uri_data(self, _uri, _header=None, _data=None):
+    def get_uri_data(self, _uri, _retries, _header=None, _data=None):
         if _header is None:
             header = {
                 'User-agent': utils.DEFAULT_USER_AGENT}
         else:
             header = _header
         if _data:
-            resp = self.plugin_obj.http_session.post(_uri, headers=header, data=_data, timeout=(8, 8))
+            resp = self.plugin_obj.http_session.post(_uri, headers=header, data=_data, timeout=8)
         else:
-            resp = self.plugin_obj.http_session.get(_uri, headers=header, timeout=(8, 8))
+            resp = self.plugin_obj.http_session.get(_uri, headers=header, timeout=8)
         x = resp.content
         return x
 
     @handle_url_except()
-    def get_m3u8_data(self, _uri, _header=None):
+    def get_m3u8_data(self, _uri, _retries, _header=None):
         if _header is None:
             return m3u8.load(_uri,
                              headers={'User-agent': utils.DEFAULT_USER_AGENT},
@@ -147,7 +147,8 @@ class PluginChannels:
                     self.config_obj.data[self.config_section]['channel-import_groups'])
             else:
                 self.db.save_channel_list(self.plugin_obj.name, self.instance_key, ch_dict)
-            config_callbacks.update_channel_num(self.config_obj, self.config_section, 'channel-start_ch_num')
+            if self.config_obj.data[self.config_section].get('channel-start_ch_num') > -1:
+                config_callbacks.update_channel_num(self.config_obj, self.config_section, 'channel-start_ch_num')
             self.logger.debug(
                 '{}:{} Channel update complete'
                 .format(self.plugin_obj.name, self.instance_key))
@@ -163,7 +164,7 @@ class PluginChannels:
         return re.sub('[ +&*%$#@!:;,<>?]', '', group_name)
 
     @handle_url_except()
-    def get_thumbnail_size(self, _thumbnail, _ch_uid, ):
+    def get_thumbnail_size(self, _thumbnail, _retries, _ch_uid, ):
         thumbnail_size = (0, 0)
         if _thumbnail is None or _thumbnail == '':
             return thumbnail_size
@@ -179,7 +180,7 @@ class PluginChannels:
              'Accept-Encoding': 'identity',
              'Connection': 'Keep-Alive'
              }
-        resp = self.plugin_obj.http_session.get(_thumbnail, headers=h, timeout=(8, 8))
+        resp = self.plugin_obj.http_session.get(_thumbnail, headers=h, timeout=8)
         resp.raise_for_status()
         img_blob = resp.content
         fp = io.BytesIO(img_blob)
@@ -193,7 +194,7 @@ class PluginChannels:
         return thumbnail_size
 
     @handle_url_except
-    def get_best_stream(self, _url, _channel_id, _referer=None):
+    def get_best_stream(self, _url, _retries, _channel_id, _referer=None):
         if self.config_obj.data[self.config_section]['player-stream_type'] == 'm3u8redirect':
             return _url
 

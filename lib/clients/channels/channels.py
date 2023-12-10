@@ -84,7 +84,6 @@ def get_channels_m3u(_config, _base_url, _namespace, _instance, _plugins):
         for sid_data in sid_data_list:
             if sid in sids_processed:
                 continue
-            sids_processed.append(sid)
             if not sid_data['enabled'] \
                     or not _plugins.get(sid_data['namespace']) \
                     or not _plugins[sid_data['namespace']].enabled:
@@ -95,6 +94,7 @@ def get_channels_m3u(_config, _base_url, _namespace, _instance, _plugins):
             config_section = utils.instance_config_section(sid_data['namespace'], sid_data['instance'])
             if not _config[config_section]['enabled']:
                 continue
+            sids_processed.append(sid)
             stream = _config[config_section]['player-stream_type']
             if stream == 'm3u8redirect' and sid_data['json'].get('stream_url'):
                 uri = sid_data['json']['stream_url']
@@ -167,6 +167,7 @@ def get_channels_json(_config, _base_url, _namespace, _instance, _plugins):
             config_section = utils.instance_config_section(sid_data['namespace'], sid_data['instance'])
             if not _config[config_section]['enabled']:
                 continue
+            sids_processed.append(sid)
             stream = _config[config_section]['player-stream_type']
             if stream == 'm3u8redirect':
                 uri = sid_data['json']['stream_url']
@@ -195,7 +196,6 @@ def get_channels_xml(_config, _base_url, _namespace, _instance, _plugins):
         for sid_data in sid_data_list:
             if sid in sids_processed:
                 continue
-            sids_processed.append(sid)
             if not sid_data['enabled']:
                 continue
             if not _plugins.get(sid_data['namespace']):
@@ -205,9 +205,11 @@ def get_channels_xml(_config, _base_url, _namespace, _instance, _plugins):
             if not _plugins[sid_data['namespace']] \
                     .plugin_obj.instances[sid_data['instance']].enabled:
                 continue
+
             config_section = utils.instance_config_section(sid_data['namespace'], sid_data['instance'])
             if not _config[config_section]['enabled']:
                 continue
+            sids_processed.append(sid)
             stream = _config[config_section]['player-stream_type']
             if stream == 'm3u8redirect':
                 uri = sid_data['json']['stream_url']
@@ -256,6 +258,12 @@ class ChannelsURL:
                     lookup_name = self.translate_main2json(name)
                     if lookup_name is not None:
                         value = ch_db['json'][lookup_name]
+                if name == 'display_number':
+                    config_section = utils.instance_config_section(ch_db['namespace'], instance)
+                    start_ch = self.config[config_section].get('channel-start_ch_num')
+                    if start_ch > -1:
+                        results += ''.join(['<li>ERROR: Starting Ch Number setting is not default (-1) [', uid, '][', instance, '][', name, '] not changed', '</li>'])
+                        continue
                 results += ''.join(['<li>Updated [', uid, '][', instance, '][', name, '] to ', str(value), '</li>'])
                 ch_db[name] = value
                 if name == 'thumbnail':

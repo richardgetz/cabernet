@@ -19,6 +19,7 @@ substantial portions of the Software.
 import functools
 import http
 import http.client
+import httpx
 import json
 import logging
 import os
@@ -44,12 +45,19 @@ def handle_url_except(f=None, timeout=None):
 
     def wrapper_func(self, *args, **kwargs):
         ex_save = None
+        # arg0 = uri, arg1=retries
         if len(args) == 0:
             self.logger.warning('get uri called with no args f:{}'.format(f))
             arg0 = 'None'
+            retries = 2
+        elif len(args) == 1:
+            arg0 = args[0]
+            retries = 2
         else:
             arg0 = args[0]
-        i = 2
+            self.logger.warning('get uri called from {} with retires={}'.format(f, args[1]))
+            retries = args[1]
+        i = retries
         is_done = 0
         while i > is_done:
             i -= 1
@@ -68,41 +76,17 @@ def handle_url_except(f=None, timeout=None):
                 ex_save = ex
                 self.logger.info("ConnectionResetError in function {}(), retrying {} {} {}"
                                  .format(f.__qualname__, os.getpid(), str(ex_save), str(arg0)))
-            except (requests.exceptions.HTTPError, urllib.error.HTTPError) as ex:
-                ex_save = ex
-                self.logger.info("HTTPError in function {}(), retrying {} {} {}"
-                                 .format(f.__qualname__, os.getpid(), str(ex_save), str(arg0), ))
-            except urllib.error.URLError as ex:
-                ex_save = ex
-                if isinstance(ex.reason, ConnectionRefusedError):
-                    self.logger.info("URLError:ConnectionRefusedError in function {}(): {} {} {}"
-                                     .format(f.__qualname__, os.getpid(), str(ex_save), str(arg0)))
-                    count = 5
-                    while count > 0:
-                        try:
-                            x = f(self, *args, **kwargs)
-                            return x
-                        except urllib.error.URLError as ex2:
-                            self.logger.debug("{} URLError:ConnectionRefusedError in function {}(): {} {} {}"
-                                              .format(count, f.__qualname__, os.getpid(), str(ex_save), str(arg0)))
-                            count -= 1
-                            time.sleep(.5)
-                        except Exception as ex3:
-                            break
-                else:
-                    self.logger.info("URLError in function {}(), retrying (): {} {} {}"
-                                     .format(f.__qualname__, os.getpid(), str(ex_save), str(arg0)))
             except requests.exceptions.InvalidURL as ex:
                 ex_save = ex
                 self.logger.info("InvalidURL Error in function {}(), retrying {} {} {}"
                                  .format(f.__qualname__, os.getpid(), str(ex_save), str(arg0)))
 
-            except (socket.timeout, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout) as ex:
+            except (socket.timeout, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout, httpx.ReadTimeout, httpx.ConnectTimeout) as ex:
                 ex_save = ex
                 self.logger.info("Socket Timeout Error in function {}(), retrying {} {} {}"
                                  .format(f.__qualname__, os.getpid(), str(ex_save), str(arg0)))
 
-            except requests.exceptions.ConnectionError as ex:
+            except (requests.exceptions.ConnectionError, httpx.ConnectError) as ex:
                 ex_save = ex
                 if hasattr(ex.args[0], 'reason'):
                     reason = ex.args[0].reason
@@ -146,6 +130,30 @@ def handle_url_except(f=None, timeout=None):
                 ex_save = ex
                 self.logger.info('InvalidURL Error, encoding and trying again. In function {}() {} {} {}'
                                  .format(f.__qualname__, os.getpid(), str(ex_save), str(arg0)))
+            except (requests.exceptions.HTTPError, urllib.error.HTTPError, httpx.HTTPError) as ex:
+                ex_save = ex
+                self.logger.info("HTTPError in function {}(), retrying {} {} {}"
+                                 .format(f.__qualname__, os.getpid(), str(ex_save), str(arg0), ))
+            except urllib.error.URLError as ex:
+                ex_save = ex
+                if isinstance(ex.reason, ConnectionRefusedError):
+                    self.logger.info("URLError:ConnectionRefusedError in function {}(): {} {} {}"
+                                     .format(f.__qualname__, os.getpid(), str(ex_save), str(arg0)))
+                    count = 5
+                    while count > 0:
+                        try:
+                            x = f(self, *args, **kwargs)
+                            return x
+                        except urllib.error.URLError as ex2:
+                            self.logger.debug("{} URLError:ConnectionRefusedError in function {}(): {} {} {}"
+                                              .format(count, f.__qualname__, os.getpid(), str(ex_save), str(arg0)))
+                            count -= 1
+                            time.sleep(.5)
+                        except Exception as ex3:
+                            break
+                else:
+                    self.logger.info("URLError in function {}(), retrying (): {} {} {}"
+                                     .format(f.__qualname__, os.getpid(), str(ex_save), str(arg0)))
             except (requests.exceptions.ProxyError, requests.exceptions.SSLError, \
                     requests.exceptions.TooManyRedirects, requests.exceptions.InvalidHeader, \
                     requests.exceptions.InvalidProxyURL, requests.exceptions.ChunkedEncodingError, \
@@ -182,7 +190,7 @@ def handle_json_except(f):
     def wrapper_func(self, *args, **kwargs):
         try:
             return f(self, *args, **kwargs)
-        except (json.JSONDecodeError, requests.exceptions.InvalidJSONError) as jsonError:
+        except (json.JSONDecodeError) as jsonError:
             self.logger.error("JSONError in function {}(): {}".format(f.__qualname__, str(jsonError)))
             return None
 

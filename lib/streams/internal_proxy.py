@@ -31,8 +31,6 @@ import lib.common.exceptions as exceptions
 import lib.common.utils as utils
 import lib.m3u8 as m3u8
 import lib.streams.m3u8_queue as m3u8_queue
-from lib.common.decorators import handle_url_except
-from lib.common.decorators import handle_json_except
 from lib.streams.video import Video
 from lib.streams.atsc import ATSCMsg
 from lib.streams.thread_queue import ThreadQueue
@@ -42,7 +40,7 @@ from lib.clients.web_handler import WebHTTPHandler
 from .stream import Stream
 
 MAX_OUT_QUEUE_SIZE = 30
-IDLE_COUNTER_MAX = 59     # time in seconds beyond any filtered or serving packet to terminate the stream
+IDLE_COUNTER_MAX = 110    # four times the timeout * retries to terminate the stream in seconds set in config!
 STARTUP_IDLE_COUNTER = 40 # time to wait for an initial stream
 # code assumes a timeout response in TVH of 15 or higher.
 
@@ -73,6 +71,7 @@ class InternalProxy(Stream):
         self.terminate_queue = None
         self.tc_match = re.compile(r'^.+\D+(\d*)\.ts')
         self.idle_counter = 0
+        self.tuner_no = -1
         # last time the idle counter was reset
         self.last_reset_time = datetime.datetime.now()
         self.last_atsc_msg = 0
@@ -107,13 +106,14 @@ class InternalProxy(Stream):
         self.t_m3u8 = None
         self.clear_queues()
 
-    def stream(self, _channel_dict, _wfile, _terminate_queue):
+    def stream(self, _channel_dict, _wfile, _terminate_queue, _tuner_no):
         """
         Processes m3u8 interface without using ffmpeg
         """
         global IDLE_COUNTER_MAX
+        self.tuner_no = _tuner_no
         self.config = self.db_configdefn.get_config()
-        IDLE_COUNTER_MAX = self.config['stream']['stream_timeout']
+        IDLE_COUNTER_MAX = self.config[self.namespace.lower()]['stream-g_stream_timeout']
         
         self.channel_dict = _channel_dict
         if not self.start_m3u8_queue_process():
@@ -252,19 +252,21 @@ class InternalProxy(Stream):
                     uri_decoded = urllib.parse.unquote(uri)
                     if self.check_ts_counter(uri_decoded):
                         # if the length of the video is tiny, then print the string out
-                        if len(self.video.data) < 1000:
-                            self.logger.info('{} {} Video packet too small (<1,000), data: {} {}'
+                        if len(self.video.data) < 2000 and len(self.video.data) % 188 != 0  or self.video.data.startswith(b'<'):
+                            self.logger.info('{} {} Not a Video packet, restarting HTTP Session, data: {} {}'
                                 .format(self.t_m3u8_pid, uri_decoded, len(self.video.data), self.video.data))
+                            self.update_tuner_status('Bad Data')
+                            self.in_queue.put({'thread_id': threading.get_ident(), 'uri': 'restart_http'})
                         else:
                             start_ttw = time.time()
                             self.write_buffer(self.video.data)
                             delta_ttw = time.time() - start_ttw
+                            self.update_tuner_status('Streaming')
                             self.logger.info(
                                 'Serving {} {} ({})s ({}B) ttw:{:.2f}s {}'
                                 .format(self.t_m3u8_pid, uri_decoded, self.duration,
                                         len(self.video.data), delta_ttw, threading.get_ident()))
                             self.is_starting = False
-                            self.update_tuner_status('Streaming')
                             time.sleep(0.1)
                 else:
                     if not self.is_starting:
@@ -278,13 +280,39 @@ class InternalProxy(Stream):
         self.video.terminate()
 
     def write_buffer(self, _data):
+        """
+        Plan is to slowly push out bytes until something is
+        added to the queue to process.  This should stop the
+        clients from terminating the data stream due to lack of data for 
+        a short.  It is currently set to at least 20 seconds of data 
+        before it stops transmitting
+        """
         try:
-            self.wfile.flush()
-            # Do not use chunk writes! Just send data.
-            # x = self.wfile.write('{}\r\n'.format(len(_data)).encode())
-            x = self.wfile.write(_data)
-            # x = self.wfile.write('\r\n'.encode())
-            self.wfile.flush()
+            bytes_written = 0
+            count = 0
+            bytes_per_write = int(len(_data)/20)  # number of seconds to keep transmitting
+            while self.out_queue.qsize() == 0:
+                self.wfile.flush()
+                # Do not use chunk writes! Just send data.
+                # x = self.wfile.write('{}\r\n'.format(len(_data)).encode())
+                next_buffer_write = bytes_written + bytes_per_write
+                if next_buffer_write >= len(_data):
+                    x = self.wfile.write(_data[bytes_written:])
+                    bytes_written = len(_data)
+                    self.wfile.flush()
+                    break
+                else:
+                    count += 1
+                    if count > 13:
+                        self.update_tuner_status('No Reply')
+                    x = self.wfile.write(_data[bytes_written:next_buffer_write])
+                    bytes_written = next_buffer_write
+                    # x = self.wfile.write('\r\n'.encode())
+                    self.wfile.flush()
+                time.sleep(1.0)
+            if bytes_written != len(_data):
+                x = self.wfile.write(_data[bytes_written:])
+                self.wfile.flush()
         except socket.timeout:
             raise
         except IOError:
@@ -323,9 +351,9 @@ class InternalProxy(Stream):
         ch_num = self.channel_dict['display_number']
         namespace = self.channel_dict['namespace']
         scan_list = WebHTTPHandler.rmg_station_scans[namespace]
-        for i, tuner in enumerate(scan_list):
-            if type(tuner) == dict and tuner['ch'] == ch_num:
-                WebHTTPHandler.rmg_station_scans[namespace][i]['status'] = _status
+        tuner = scan_list[self.tuner_no]
+        if type(tuner) == dict and tuner['ch'] == ch_num:
+            WebHTTPHandler.rmg_station_scans[namespace][self.tuner_no]['status'] = _status
 
     def update_idle_counter(self):
         """
@@ -335,7 +363,6 @@ class InternalProxy(Stream):
         current_time = datetime.datetime.now()
         delta_time = current_time - self.last_reset_time
         self.idle_counter = int(delta_time.total_seconds())
-
 
     def check_ts_counter(self, _uri):
         """
@@ -375,31 +402,27 @@ class InternalProxy(Stream):
         ch_num = self.channel_dict['display_number']
         namespace = self.channel_dict['namespace']
         scan_list = WebHTTPHandler.rmg_station_scans[namespace]
+        tuner = scan_list[self.tuner_no]
         m3u8_out_queue = None
 
-        for i, tuner in enumerate(scan_list):
-            if isinstance(tuner, dict) \
-                    and tuner['ch'] == ch_num \
-                    and tuner['instance'] == self.instance:
- 
-                if not WebHTTPHandler.rmg_station_scans[namespace][i]['mux']:
-                    # new tuner case
-                    m3u8_out_queue = Queue(maxsize=MAX_OUT_QUEUE_SIZE)
-                    self.t_queue = ThreadQueue(m3u8_out_queue)
-                    self.t_queue.add_thread(threading.get_ident(), self.out_queue)
-                    self.t_queue.status_queue = self.in_queue
-                    WebHTTPHandler.rmg_station_scans[namespace][i]['mux'] = self.t_queue
-                    break
-                elif self.channel_dict['json'].get('VOD'):
-                    pass
-                else:
-                    # reuse tuner case
-                    self.t_queue = WebHTTPHandler.rmg_station_scans[namespace][i]['mux']
-                    self.t_queue.add_thread(threading.get_ident(), self.out_queue)
-                    self.t_m3u8 = self.t_queue.remote_proc
-                    self.t_m3u8_pid = self.t_queue.remote_proc.pid
-                    self.in_queue = self.t_queue.status_queue
-                    break
+        if isinstance(tuner, dict) \
+                and tuner['ch'] == ch_num \
+                and tuner['instance'] == self.instance:
+
+            if not tuner['mux']:
+                # new tuner case
+                m3u8_out_queue = Queue(maxsize=MAX_OUT_QUEUE_SIZE)
+                self.t_queue = ThreadQueue(m3u8_out_queue, self.config)
+                self.t_queue.add_thread(threading.get_ident(), self.out_queue)
+                self.t_queue.status_queue = self.in_queue
+                WebHTTPHandler.rmg_station_scans[namespace][self.tuner_no]['mux'] = self.t_queue
+            else:
+                # reuse tuner case
+                self.t_queue = tuner['mux']
+                self.t_queue.add_thread(threading.get_ident(), self.out_queue)
+                self.t_m3u8 = self.t_queue.remote_proc
+                self.t_m3u8_pid = self.t_queue.remote_proc.pid
+                self.in_queue = self.t_queue.status_queue
 
         while not is_running and restarts > 0:
             restarts -= 1
@@ -468,6 +491,6 @@ class InternalProxy(Stream):
         self.clear_queues()
         time.sleep(0.1)
         self.in_queue = Queue()
-        self.out_queue = Queue(maxsize=MAX_OUT_QUEUE_SIZE)
+        self.out_queue = queue.Queue(maxsize=MAX_OUT_QUEUE_SIZE)
         self.t_queue.add_thread(threading.get_ident(), self.out_queue)
         self.t_queue.status_queue = self.in_queue

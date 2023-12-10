@@ -118,7 +118,7 @@ class PluginManager:
             self.repo_rec['dir']['datadir']['url'], 
             self.plugin_rec['id'], zip_file
             ])
-        tmp_zip_path = self.download_zip(zippath, zip_file)
+        tmp_zip_path = self.download_zip(zippath, 2, zip_file)
         if not tmp_zip_path:
             self.logger.notice('Unable to obtain zip file from repo, aborting')
             results = 'Error: Unable to obtain zip file {} from repo, aborting' \
@@ -283,9 +283,28 @@ class PluginManager:
 
         results += '<br>A restart is suggested to finish cleaning up plugin'
         return results
+
+    def add_instance(self, _repo_id, _plugin_id, _sched_queue=None):
+        plugin_rec = self.plugin_db.get_plugins(None, _repo_id, _plugin_id)
+        if not plugin_rec:
+            self.logger.notice('No plugin found, aborting')
+            return 'Error: No plugin found, aborting delete request'
+        elif not plugin_rec[0]['version']['installed']:
+            self.logger.notice('Plugin not installed, aborting')
+            return 'Error: Plugin not installed, aborting delete request'
+        
+        plugin_rec = plugin_rec[0]
+        namespace = plugin_rec['name']
+
+        results = 'Adding Instance {}'.format(_plugin_id)
+
+        results += '<br>A restart is suggested to finish adding the instance'
+        return results
+
+    
         
     @handle_url_except
-    def download_zip(self, _zip_url, _zip_filename):
+    def download_zip(self, _zip_url, _retries, _zip_filename):
         """
         Returns the location of the zip file
         """
