@@ -149,7 +149,7 @@ class RepoHandler:
     def get_uri_data(self, _uri, _retries):
         header = {
             'User-agent': utils.DEFAULT_USER_AGENT}
-        resp = RepoHandler.http_session.get(_uri, headers=header, timeout=8)
+        resp = RepoHandler.http_session.get(_uri, headers=header, timeout=(2, 8))
         x = resp.content
         resp.raise_for_status()
         return x

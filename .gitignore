@@ -30,3 +30,4 @@ test*
 /lib/tvheadend/htdocs/Netbeans/nbproject/private/
 **.DS_Store**
 cabernet-vpn.tar
+/plugins_ext/*

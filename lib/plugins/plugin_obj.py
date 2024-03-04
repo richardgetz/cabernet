@@ -37,6 +37,8 @@ class PluginObj:
         self.plugin = _plugin
         self.plugins = None
         self.http_session = requests.session()
+        # Disable the CERT unverified warnings
+        requests.packages.urllib3.disable_warnings()
         self.config_obj = _plugin.config_obj
         self.namespace = _plugin.namespace
         self.def_trans = ''.join([
@@ -69,6 +71,7 @@ class PluginObj:
         self.instances = None
         self.scheduler_db = None
 
+    
 
     # INTERFACE METHODS
     # Plugin may have the following methods

@@ -99,9 +99,9 @@ class PluginChannels:
         else:
             header = _header
         if _data:
-            resp = self.plugin_obj.http_session.post(_uri, headers=header, data=_data, timeout=8)
+            resp = self.plugin_obj.http_session.post(_uri, headers=header, data=_data, timeout=8, verify=False)
         else:
-            resp = self.plugin_obj.http_session.get(_uri, headers=header, timeout=8)
+            resp = self.plugin_obj.http_session.get(_uri, headers=header, timeout=8, verify=False)
         x = resp.content
         return x
 
@@ -197,6 +197,7 @@ class PluginChannels:
     def get_best_stream(self, _url, _retries, _channel_id, _referer=None):
         if self.config_obj.data[self.config_section]['player-stream_type'] == 'm3u8redirect':
             return _url
+
 
         self.logger.debug(
             '{}: Getting best video stream info for {} {}'

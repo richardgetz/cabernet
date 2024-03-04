@@ -35,12 +35,6 @@ try:
     except ModuleNotFoundError:
         print('Unable to install required cryptography module')
     try:
-        import requests
-    except ImportError:
-        pip(['install', 'requests'])
-    except ModuleNotFoundError:
-        print('Unable to install required requests module')
-    try:
         import httpx
     except ImportError:
         pip(['install', 'httpx[http2]'])
@@ -128,6 +122,10 @@ def main(script_dir):
         config_obj = user_config.get_config(script_dir, opersystem, args)
         config = config_obj.data
         LOGGER = logging.getLogger(__name__)
+        # reduce logging for httpx modules
+        logging.getLogger("hpack").setLevel(logging.WARNING)
+        logging.getLogger("httpx").setLevel(logging.WARNING)
+        logging.getLogger("httpcore").setLevel(logging.WARNING)
 
         LOGGER.warning('#########################################')
         LOGGER.warning('MIT License, Copyright (C) 2021 ROCKY4546')
@@ -151,6 +149,7 @@ def main(script_dir):
         plugins = init_plugins(config_obj)
         config_obj.defn_json = None
         init_versions(plugins)
+
         if opersystem in ['Windows']:
             pickle_it = Pickling(config)
             pickle_it.to_pickle(plugins)

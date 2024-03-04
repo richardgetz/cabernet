@@ -19,7 +19,6 @@ substantial portions of the Software.
 import functools
 import http
 import http.client
-import httpx
 import json
 import logging
 import os
@@ -47,7 +46,6 @@ def handle_url_except(f=None, timeout=None):
         ex_save = None
         # arg0 = uri, arg1=retries
         if len(args) == 0:
-            self.logger.warning('get uri called with no args f:{}'.format(f))
             arg0 = 'None'
             retries = 2
         elif len(args) == 1:
@@ -55,7 +53,6 @@ def handle_url_except(f=None, timeout=None):
             retries = 2
         else:
             arg0 = args[0]
-            self.logger.warning('get uri called from {} with retires={}'.format(f, args[1]))
             retries = args[1]
         i = retries
         is_done = 0
@@ -76,17 +73,18 @@ def handle_url_except(f=None, timeout=None):
                 ex_save = ex
                 self.logger.info("ConnectionResetError in function {}(), retrying {} {} {}"
                                  .format(f.__qualname__, os.getpid(), str(ex_save), str(arg0)))
+
             except requests.exceptions.InvalidURL as ex:
                 ex_save = ex
                 self.logger.info("InvalidURL Error in function {}(), retrying {} {} {}"
                                  .format(f.__qualname__, os.getpid(), str(ex_save), str(arg0)))
 
-            except (socket.timeout, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout, httpx.ReadTimeout, httpx.ConnectTimeout) as ex:
+            except (socket.timeout, requests.exceptions.ConnectTimeout, requests.exceptions.ReadTimeout) as ex:
                 ex_save = ex
                 self.logger.info("Socket Timeout Error in function {}(), retrying {} {} {}"
                                  .format(f.__qualname__, os.getpid(), str(ex_save), str(arg0)))
 
-            except (requests.exceptions.ConnectionError, httpx.ConnectError) as ex:
+            except requests.exceptions.ConnectionError as ex:
                 ex_save = ex
                 if hasattr(ex.args[0], 'reason'):
                     reason = ex.args[0].reason
@@ -96,18 +94,6 @@ def handle_url_except(f=None, timeout=None):
                     self.logger.info("ConnectionError:ConnectionRefused in function {}(), retrying (): {} {} {}"
                                      .format(f.__qualname__, os.getpid(), str(ex_save), str(arg0)))
                     time.sleep(2)
-                    #count = 4
-                    #while count > 0:
-                    #    try:
-                    #        x = f(self, *args, **kwargs)
-                    #        return x
-                    #    except requests.exceptions.ConnectionError as ex2:
-                    #        self.logger.debug("{} ConnectionError:ConnectionRefused in function {} (): {} {} {}"
-                    #                         .format(count, f.__qualname__, os.getpid(), str(ex_save), str(arg0)))
-                    #        count -= 1
-                    #        time.sleep(1)
-                    #    except Exception as ex3:
-                    #        break
                 else:
                     self.logger.info("ConnectionError in function {}(), retrying (): {} {} {}"
                                      .format(f.__qualname__, os.getpid(), str(ex_save), str(arg0)))
@@ -130,7 +116,8 @@ def handle_url_except(f=None, timeout=None):
                 ex_save = ex
                 self.logger.info('InvalidURL Error, encoding and trying again. In function {}() {} {} {}'
                                  .format(f.__qualname__, os.getpid(), str(ex_save), str(arg0)))
-            except (requests.exceptions.HTTPError, urllib.error.HTTPError, httpx.HTTPError) as ex:
+
+            except (requests.exceptions.HTTPError, urllib.error.HTTPError) as ex:
                 ex_save = ex
                 self.logger.info("HTTPError in function {}(), retrying {} {} {}"
                                  .format(f.__qualname__, os.getpid(), str(ex_save), str(arg0), ))
@@ -154,6 +141,14 @@ def handle_url_except(f=None, timeout=None):
                 else:
                     self.logger.info("URLError in function {}(), retrying (): {} {} {}"
                                      .format(f.__qualname__, os.getpid(), str(ex_save), str(arg0)))
+            except http.client.IncompleteRead as ex:
+                ex_save = ex
+                self.logger.info('Partial Data Error from url received in function {}(), retrying. {} {} {}'
+                                 .format(f.__qualname__, os.getpid(), str(ex_save), str(arg0)))
+            except ValueError as ex:
+                ex_save = ex
+                self.logger.info('ValueError in function {}(), aborting. {} {} {}'
+                                 .format(f.__qualname__, os.getpid(), str(ex_save), str(arg0)))
             except (requests.exceptions.ProxyError, requests.exceptions.SSLError, \
                     requests.exceptions.TooManyRedirects, requests.exceptions.InvalidHeader, \
                     requests.exceptions.InvalidProxyURL, requests.exceptions.ChunkedEncodingError, \
@@ -168,15 +163,6 @@ def handle_url_except(f=None, timeout=None):
                 ex_save = ex
                 self.logger.info('Missing Schema Error in function {}(), retrying. {} {} {}'
                                  .format(f.__qualname__, os.getpid(), str(ex_save), str(arg0)))
-            except http.client.IncompleteRead as ex:
-                ex_save = ex
-                self.logger.info('Partial Data Error from url received in function {}(), retrying. {} {} {}'
-                                 .format(f.__qualname__, os.getpid(), str(ex_save), str(arg0)))
-            except ValueError as ex:
-                ex_save = ex
-                self.logger.info('ValueError in function {}(), aborting. {} {} {}'
-                                 .format(f.__qualname__, os.getpid(), str(ex_save), str(arg0)))
-
             time.sleep(1.0)
         self.logger.notice('Multiple HTTP Errors, unable to get url data, skipping {}() {} {} {}'
                            .format(f.__qualname__, os.getpid(), str(ex_save), str(arg0)))
